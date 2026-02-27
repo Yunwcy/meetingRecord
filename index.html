@@ -11,7 +11,7 @@
         .container { background: #fff; padding: 20px 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; }
         .form-group { margin-bottom: 15px; }
         label { display: block; font-weight: bold; margin-bottom: 5px; }
-        input[type="text"], input[type="datetime-local"], textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: inherit; }
+        input[type="text"], input[type="password"], input[type="datetime-local"], textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: inherit; }
         textarea { resize: vertical; height: 120px; }
         
         /* 按鈕基本樣式 */
@@ -79,7 +79,7 @@
                     建議：手機改外放、靠近麥克風 10–30 公分、關閉風扇/空調噪音。
                 </div>
                 <audio id="audioPlayback" controls style="display:none;"></audio>
-                <a id="btnDownloadAudio" class="btn-action" style="display:none; margin-top: 10px; background-color: #8e44ad;">⬇️ 下載錄音檔</a>
+                <button type="button" id="btnDownloadAudio" class="btn-action" style="display:none; margin-top: 10px; background-color: #8e44ad;" onclick="downloadOrShareLastAudio()">⬇️ 下載 / 分享錄音檔</button>
             </div>
 
             <div class="form-group">
@@ -169,6 +169,10 @@
         let analyser;
         let meterRaf;
         let isTextOnlyRunning = false;
+        let lastAudioBlob;
+        let lastAudioUrl;
+        let lastAudioFilename = "";
+        let lastAudioMimeType = "";
         
         function getLocalDatetimeInputValue(d = new Date()) {
             const pad = (n) => String(n).padStart(2, '0');
@@ -179,7 +183,6 @@
             document.getElementById('meetingDate').value = getLocalDatetimeInputValue();
         }
 
-        // 預設填入當前時間（本地時間，避免 datetime-local 時區偏移）
         setMeetingDateNow();
 
         function isTextOnlySelected() {
@@ -192,7 +195,6 @@
             const speakerEl = document.getElementById('speakerMode');
 
             if (speakerEl) {
-                // 外放收音模式是透過 getUserMedia constraints 控制；純文字聽寫不會走 getUserMedia
                 speakerEl.disabled = textOnly;
                 if (textOnly) speakerEl.checked = false;
             }
@@ -251,14 +253,10 @@
                 models: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o']
             },
             gemini: {
-                // 這裡使用 OpenAI 相容 Proxy 時，仍走 /chat/completions；若你改用官方 Gemini API，需調整 body 格式
                 endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
                 models: ['gemini-1.5-flash', 'gemini-1.5-pro']
             },
-            other: {
-                endpoint: '',
-                models: []
-            }
+            other: { endpoint: '', models: [] }
         };
 
         function onProviderChange() {
@@ -268,12 +266,9 @@
             const modelSelect = document.getElementById('aiModelSelect');
             const modelInput = document.getElementById('aiModel');
 
-            if (endpointInput && preset.endpoint) {
-                endpointInput.value = preset.endpoint;
-            }
+            if (endpointInput && preset.endpoint) endpointInput.value = preset.endpoint;
 
             if (modelSelect) {
-                // 根據供應商 preset 重新填入 options（保留「自訂」選項）
                 const customLabel = '自訂模型名稱…';
                 modelSelect.innerHTML = '';
                 (preset.models || []).forEach(m => {
@@ -287,7 +282,6 @@
                 customOpt.textContent = customLabel;
                 modelSelect.appendChild(customOpt);
 
-                // 預設選第一個模型
                 if (preset.models && preset.models.length > 0) {
                     modelSelect.value = preset.models[0];
                     if (modelInput) modelInput.value = preset.models[0];
@@ -305,7 +299,6 @@
 
             const val = modelSelect.value;
             if (val === '_custom') {
-                // 讓使用者自由輸入
                 modelInput.focus();
                 modelInput.select();
                 return;
@@ -313,47 +306,33 @@
             modelInput.value = val;
         }
 
-        // 初始化預設供應商/模型
         onProviderChange();
-
         initByokKey();
 
-        // 初始化 Web Speech API (僅支援 Chrome, Edge 等 Chromium 核心瀏覽器)
         if ('webkitSpeechRecognition' in window) {
             recognition = new webkitSpeechRecognition();
             recognition.continuous = true;
             recognition.interimResults = true;
-            recognition.lang = 'zh-TW'; // 預設聆聽中文，若要聽英文可改為 'en-US'
+            recognition.lang = 'zh-TW'; 
 
             recognition.onresult = function(event) {
                 let interimTranscript = '';
                 let finalTranscript = '';
-
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript;
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                    }
+                    if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript;
+                    else interimTranscript += event.results[i][0].transcript;
                 }
-
-                // 將最終確定的文字加進文字框
                 if (finalTranscript) {
                     const contentBox = document.getElementById('meetingContent');
                     contentBox.value += (contentBox.value ? '\n' : '') + finalTranscript;
                 }
-                // 顯示即時正在講的字
                 document.getElementById('interimText').innerText = interimTranscript;
             };
-            
-            recognition.onerror = function(event) {
-                console.error("語音辨識發生錯誤:", event.error);
-            };
+            recognition.onerror = function(event) { console.error("語音辨識發生錯誤:", event.error); };
         } else {
             alert("您的瀏覽器不支援語音轉文字功能，請使用 Google Chrome。");
         }
 
-        // 啟動錄音
         async function startRecording() {
             try {
                 if (!recognition) {
@@ -361,16 +340,13 @@
                     return;
                 }
 
-                // 模式：純文字聽寫（不開 MediaRecorder，不產生錄音檔）
                 if (isTextOnlySelected()) {
                     isTextOnlyRunning = true;
                     stopMicMeter();
                     document.getElementById('audioPlayback').style.display = 'none';
                     document.getElementById('btnDownloadAudio').style.display = 'none';
                     document.getElementById('micSource').textContent = '';
-
                     try { recognition.start(); } catch (_) {}
-
                     document.getElementById('btnStartRecord').disabled = true;
                     document.getElementById('btnStopRecord').disabled = false;
                     document.getElementById('recordingStatus').innerText = "🔴 正在聽寫中（不錄音）...";
@@ -379,41 +355,49 @@
 
                 const speakerMode = !!document.getElementById('speakerMode')?.checked;
                 const audioConstraints = speakerMode
-                    ? {
-                        echoCancellation: { ideal: false },
-                        noiseSuppression: { ideal: false },
-                        autoGainControl: { ideal: false },
-                        channelCount: { ideal: 1 },
-                        sampleRate: { ideal: 48000 }
-                    }
-                    : {
-                        echoCancellation: { ideal: true },
-                        noiseSuppression: { ideal: true },
-                        autoGainControl: { ideal: true },
-                        channelCount: { ideal: 1 },
-                        sampleRate: { ideal: 48000 }
-                    };
+                    ? { echoCancellation: { ideal: false }, noiseSuppression: { ideal: false }, autoGainControl: { ideal: false }, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } }
+                    : { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, autoGainControl: { ideal: true }, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } };
 
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
                 activeStream = stream;
-                mediaRecorder = new MediaRecorder(stream);
+
+                if (!window.MediaRecorder) {
+                    alert("此瀏覽器不支援錄音檔產生。建議勾選「純文字聽寫」或改用 Chrome。");
+                    return;
+                }
+
+                lastAudioBlob = undefined;
+                if (lastAudioUrl) URL.revokeObjectURL(lastAudioUrl);
+                lastAudioUrl = undefined;
+                lastAudioFilename = "";
+
+                lastAudioMimeType = pickBestAudioMimeType();
+                const recorderOptions = lastAudioMimeType ? { mimeType: lastAudioMimeType } : undefined;
+                mediaRecorder = recorderOptions ? new MediaRecorder(stream, recorderOptions) : new MediaRecorder(stream);
                 
                 mediaRecorder.ondataavailable = event => {
                     if (event.data.size > 0) audioChunks.push(event.data);
                 };
 
                 mediaRecorder.onstop = () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const mime = lastAudioMimeType || 'audio/webm';
+                    const audioBlob = new Blob(audioChunks, { type: mime });
+                    if (!audioBlob || audioBlob.size < 16) {
+                        alert("錄音檔是空的。建議改用「純文字聽寫」。");
+                        audioChunks = [];
+                        return;
+                    }
+                    lastAudioBlob = audioBlob;
+                    lastAudioUrl = URL.createObjectURL(audioBlob);
                     
                     const audioPlayback = document.getElementById('audioPlayback');
-                    audioPlayback.src = audioUrl;
+                    audioPlayback.src = lastAudioUrl;
                     audioPlayback.style.display = 'block';
 
                     const downloadBtn = document.getElementById('btnDownloadAudio');
-                    downloadBtn.href = audioUrl;
                     const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
-                    downloadBtn.download = `會議錄音_${dateStr}.webm`;
+                    const ext = guessAudioExtension(mime);
+                    lastAudioFilename = `會議錄音_${dateStr}.${ext}`;
                     downloadBtn.style.display = 'inline-block';
                     
                     audioChunks = []; 
@@ -421,15 +405,13 @@
 
                 audioChunks = [];
                 mediaRecorder.start();
-                try { recognition.start(); } catch (_) {} // 啟動語音辨識
+                try { recognition.start(); } catch (_) {} 
 
-                // 顯示目前使用的麥克風來源（需要權限後才會有 label）
                 const micSource = document.getElementById('micSource');
                 const track = stream.getAudioTracks?.()[0];
                 const label = track?.label ? `🎛️ 來源：${track.label}` : '';
                 if (micSource) micSource.textContent = label;
 
-                // 啟動音量條
                 startMicMeter(stream);
                 
                 document.getElementById('btnStartRecord').disabled = true;
@@ -437,19 +419,16 @@
                 document.getElementById('recordingStatus').innerText = "🔴 正在錄音並轉換文字中...";
                 document.getElementById('audioPlayback').style.display = 'none';
                 document.getElementById('btnDownloadAudio').style.display = 'none';
-
             } catch (err) {
-                alert("無法存取麥克風，請確認您的設備有麥克風且已允許瀏覽器權限！\n錯誤訊息：" + err.message);
+                alert("無法存取麥克風，請確認瀏覽器權限！\n" + err.message);
             }
         }
 
-        // 停止錄音
         function stopRecording() {
             if (isTextOnlyRunning) {
                 isTextOnlyRunning = false;
                 stopMicMeter();
                 try { recognition.stop(); } catch (_) {}
-
                 document.getElementById('btnStartRecord').disabled = false;
                 document.getElementById('btnStopRecord').disabled = true;
                 document.getElementById('btnStartRecord').innerText = "🎤 重新聽寫";
@@ -459,11 +438,12 @@
             }
 
             if (mediaRecorder && mediaRecorder.state === "recording") {
+                try { mediaRecorder.requestData(); } catch (_) {}
                 mediaRecorder.stop();
                 mediaRecorder.stream.getTracks().forEach(track => track.stop());
                 activeStream = undefined;
                 stopMicMeter();
-                try { recognition.stop(); } catch (_) {} // 停止語音辨識
+                try { recognition.stop(); } catch (_) {} 
                 
                 document.getElementById('btnStartRecord').disabled = false;
                 document.getElementById('btnStopRecord').disabled = true;
@@ -477,43 +457,35 @@
             stopMicMeter();
             const fill = document.getElementById('micMeterFill');
             if (!fill) return;
-
             try {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 const src = audioCtx.createMediaStreamSource(stream);
                 analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 1024;
                 src.connect(analyser);
-
                 const data = new Uint8Array(analyser.fftSize);
                 const tick = () => {
                     if (!analyser) return;
                     analyser.getByteTimeDomainData(data);
-                    // 計算 RMS（0~1）
                     let sum = 0;
                     for (let i = 0; i < data.length; i++) {
                         const v = (data[i] - 128) / 128;
                         sum += v * v;
                     }
                     const rms = Math.sqrt(sum / data.length);
-                    // 放大一點讓視覺更明顯
                     const pct = Math.max(0, Math.min(100, Math.round(rms * 260)));
                     fill.style.width = pct + '%';
                     meterRaf = requestAnimationFrame(tick);
                 };
                 tick();
-            } catch (e) {
-                console.warn('麥克風音量條初始化失敗：', e);
-            }
+            } catch (e) { console.warn('音量條初始化失敗：', e); }
         }
 
         function stopMicMeter() {
             if (meterRaf) cancelAnimationFrame(meterRaf);
             meterRaf = undefined;
             analyser = undefined;
-            if (audioCtx) {
-                try { audioCtx.close(); } catch (_) {}
-            }
+            if (audioCtx) { try { audioCtx.close(); } catch (_) {} }
             audioCtx = undefined;
             const fill = document.getElementById('micMeterFill');
             if (fill) fill.style.width = '0%';
@@ -521,7 +493,33 @@
             if (micSource) micSource.textContent = '';
         }
 
-        // --- 會議紀錄管理與翻譯 ---
+        function pickBestAudioMimeType() {
+            if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+            const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac', 'audio/ogg;codecs=opus', 'audio/ogg'];
+            return candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+        }
+
+        function guessAudioExtension(mime) {
+            const m = (mime || '').toLowerCase();
+            if (m.includes('mp4')) return 'mp4';
+            if (m.includes('aac')) return 'aac';
+            if (m.includes('ogg')) return 'ogg';
+            return 'webm';
+        }
+
+        async function downloadOrShareLastAudio() {
+            if (!lastAudioBlob || !lastAudioFilename) return alert('目前沒有可下載的錄音檔。');
+            const file = new File([lastAudioBlob], lastAudioFilename, { type: lastAudioBlob.type || 'application/octet-stream' });
+            if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+                try { await navigator.share({ files: [file], title: '會議錄音檔' }); return; } catch (e) { console.warn('share cancelled', e); }
+            }
+            const url = lastAudioUrl || URL.createObjectURL(lastAudioBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = lastAudioFilename; a.target = '_blank';
+            document.body.appendChild(a); a.click(); a.remove();
+        }
+
+        // --- 會議紀錄管理 ---
         let meetingRecords = [];
 
         window.onload = function() {
@@ -532,22 +530,15 @@
             }
         };
 
-        // 呼叫免費翻譯 API (中文翻英文)
-        // 注意：此為免費示範 API，有每日使用額度限制。商用建議換成 Google Translate API 或 OpenAI API。
         async function translateText(text) {
             if (!text.trim()) return "";
             try {
                 const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=zh-TW|en`;
                 const response = await fetch(url);
                 const data = await response.json();
-                if (data.responseData && data.responseData.translatedText) {
-                    return data.responseData.translatedText;
-                }
+                if (data.responseData && data.responseData.translatedText) return data.responseData.translatedText;
                 return "[翻譯服務暫時無回應]";
-            } catch (error) {
-                console.error("翻譯錯誤:", error);
-                return "[翻譯發生錯誤，請檢查網路連線]";
-            }
+            } catch (error) { return "[翻譯發生錯誤，請檢查網路連線]"; }
         }
 
         async function saveRecord() {
@@ -556,15 +547,12 @@
             const actionItems = document.getElementById('actionItems').value;
             const content = document.getElementById('meetingContent').value;
 
-            if (!date || !participants || !actionItems || !content) {
-                alert('請填寫所有欄位！'); return;
-            }
+            if (!date || !participants || !actionItems || !content) { alert('請填寫所有欄位！'); return; }
 
             const button = document.querySelector('.btn-primary');
             button.innerText = "⏳ 翻譯並儲存中...";
             button.disabled = true;
 
-            // 進行翻譯
             const translatedActionItems = await translateText(actionItems);
             const translatedContent = await translateText(content);
 
@@ -583,11 +571,9 @@
             localStorage.setItem('myMeetingRecords', JSON.stringify(meetingRecords));
             
             renderAllRecords();
-            
             document.getElementById('meetingForm').reset();
             setMeetingDateNow();
             
-            // 重置錄音區塊介面
             document.getElementById('audioPlayback').style.display = 'none';
             document.getElementById('btnDownloadAudio').style.display = 'none';
             document.getElementById('btnStartRecord').disabled = false;
@@ -620,10 +606,11 @@
                 if (record.translatedContent) printContent += `<div class="translation-box"><strong>🌐 Meeting Content (English):</strong><br>${record.translatedContent}</div>`;
                 printContent += `</div>`;
 
+                // 修正重點一：不使用 JSON.stringify 放進 HTML，而是傳遞 ID
                 let actionsContent = `
                     <div class="export-actions">
-                        <button class="btn-action" onclick='exportTXT(${JSON.stringify(record)})'>📄 下載 TXT</button>
-                        <button class="btn-action" onclick='exportFolder(${JSON.stringify(record)})'>📁 匯出到資料夾</button>
+                        <button class="btn-action" onclick="exportTXT(${record.id})">📄 下載 TXT</button>
+                        <button class="btn-action" onclick="exportFolder(${record.id})">📁 匯出到資料夾</button>
                         <button class="btn-action danger" onclick="exportPDF(this, '${record.rawDate}')">📊 下載 PDF</button>
                         <button class="btn-action delete" onclick="deleteRecord(${record.id})">🗑️ 刪除</button>
                     </div>
@@ -649,66 +636,96 @@
             }
         }
 
-        function exportTXT(record) { 
+        // 配合修正：從 meetingRecords 裡抓資料
+        function exportTXT(id) { 
+            const record = meetingRecords.find(r => r.id === id);
+            if (!record) return;
+
             let txtContent = `會議紀錄\n時間：${record.date}\n參與人員：${record.participants}\n--------------------\n【行動方案】\n${record.actionItems}\n`;
             if (record.translatedActionItems) txtContent += `(English Translation): ${record.translatedActionItems}\n`;
             txtContent += `--------------------\n【會議內容】\n${record.content}\n`;
             if (record.translatedContent) txtContent += `(English Translation): ${record.translatedContent}\n`;
             
-            const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8' });
+            const blob = new Blob(["\uFEFF" + txtContent], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url; a.download = `會議紀錄_${record.rawDate}.txt`;
-            a.click(); URL.revokeObjectURL(url);
+            a.href = url;
+            a.download = `會議紀錄_${record.rawDate}.txt`;
+            a.target = '_blank';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
         }
 
+        // 修正重點二：簡化 html2pdf 擷取方式，避免超出螢幕導致全白
+        // 修正重點：加入 scrollY: 0 解決滾動後空白的問題，並強制設定白底
         function exportPDF(btn, dateStr) {
             const card = btn.closest('.record-card');
             const elementToPrint = card.querySelector('.printable-area');
-            const opt = { margin: 10, filename: `會議紀錄_${dateStr}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
-            html2pdf().set(opt).from(elementToPrint).save();
+            
+            const oldText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = '⏳ 產生 PDF...';
+
+            // 暫時加上白底與內距，確保 PDF 渲染出來不會透明或排版擠在一起
+            const originalBg = elementToPrint.style.backgroundColor;
+            const originalPadding = elementToPrint.style.padding;
+            elementToPrint.style.backgroundColor = '#eaf2f8';
+            elementToPrint.style.padding = '15px';
+
+            const opt = {
+                margin: 10,
+                filename: `會議紀錄_${dateStr}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { 
+                    scale: 2, 
+                    useCORS: true,
+                    scrollY: 0, // 👈 解決向下滾動後截圖變空白的關鍵
+                    windowWidth: document.documentElement.offsetWidth,
+                    backgroundColor: '#eaf2f8'
+                },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            };
+
+            html2pdf().set(opt).from(elementToPrint).save().then(() => {
+                // 下載完成後，把樣式復原
+                elementToPrint.style.backgroundColor = originalBg;
+                elementToPrint.style.padding = originalPadding;
+                btn.disabled = false;
+                btn.innerText = oldText;
+            }).catch(e => {
+                console.error('PDF 產生失敗：', e);
+                alert('PDF 產生失敗，請檢查瀏覽器主控台 (F12)。');
+                btn.disabled = false;
+                btn.innerText = oldText;
+            });
         }
 
-        // --- 參與人員：從對話紀錄擷取 ---
         function fillParticipantsFromChat() {
             const raw = (document.getElementById('chatLog').value || '').trim();
-            if (!raw) {
-                alert('請先貼上對話紀錄到「對話紀錄」欄位。');
-                return;
-            }
+            if (!raw) return alert('請先貼上對話紀錄到「對話紀錄」欄位。');
 
             const names = new Set();
             const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
             for (const line of lines) {
-                // 常見格式：姓名：內容 / 姓名: 內容
                 const m = line.match(/^(.{1,30}?)[：:]\s*/);
                 if (m && m[1]) {
                     const candidate = m[1].replace(/^\[|\]$/g, '').trim();
                     if (candidate && !/^(系統|System|通知|公告)$/i.test(candidate)) names.add(candidate);
                 }
-                // 另外抓 @人名
                 const atMentions = line.match(/@([^\s，,、:：]{1,30})/g) || [];
                 for (const token of atMentions) {
                     const n = token.slice(1).trim();
                     if (n) names.add(n);
                 }
             }
-
-            if (!names.size) {
-                alert('沒有在對話紀錄中抓到姓名（需符合「姓名：內容」或「@姓名」）。');
-                return;
-            }
-
+            if (!names.size) return alert('沒有在對話紀錄中抓到姓名（需符合「姓名：內容」或「@姓名」）。');
             document.getElementById('participants').value = Array.from(names).join(', ');
         }
 
-        // --- 行動方案：從逐字稿（會議內容）整理 ---
         function normalizeBullets(items) {
-            const cleaned = items
-                .map(s => (s || '').trim())
-                .filter(Boolean)
-                .map(s => s.replace(/^[\-\*\u2022]\s*/, '').trim())
-                .filter(Boolean);
+            const cleaned = items.map(s => (s || '').trim()).filter(Boolean).map(s => s.replace(/^[\-\*\u2022]\s*/, '').trim()).filter(Boolean);
             const uniq = [];
             const seen = new Set();
             for (const s of cleaned) {
@@ -720,33 +737,22 @@
 
         function generateActionItemsFromContent() {
             const content = (document.getElementById('meetingContent').value || '').trim();
-            if (!content) {
-                alert('目前沒有會議內容（逐字稿）。請先錄音轉文字或貼上內容。');
-                return;
-            }
-
-            const keywords = [
-                '決議','結論','待辦','行動','action','todo','負責','owner','期限','截止','完成','下週','明天','今天','請','需要','安排','追蹤','follow up'
-            ];
+            if (!content) return alert('目前沒有會議內容（逐字稿）。請先錄音轉文字或貼上內容。');
+            
+            const keywords = ['決議','結論','待辦','行動','action','todo','負責','owner','期限','截止','完成','下週','明天','今天','請','需要','安排','追蹤','follow up'];
             const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
             const hits = [];
-
             for (const l of lines) {
                 const lower = l.toLowerCase();
                 if (keywords.some(k => lower.includes(String(k).toLowerCase()))) hits.push(l);
             }
-
-            // 如果抓不到，就用最後幾行當候選（避免空輸出）
             const candidates = hits.length ? hits : lines.slice(-6);
             document.getElementById('actionItems').value = normalizeBullets(candidates);
         }
 
         async function generateActionItemsWithAI() {
             const content = (document.getElementById('meetingContent').value || '').trim();
-            if (!content) {
-                alert('目前沒有會議內容（逐字稿）。請先錄音轉文字或貼上內容。');
-                return;
-            }
+            if (!content) return alert('目前沒有會議內容（逐字稿）。請先錄音轉文字或貼上內容。');
 
             const endpoint = (document.getElementById('aiEndpoint').value || '').trim();
             const model = (document.getElementById('aiModel').value || '').trim();
@@ -754,80 +760,50 @@
             if (keyInput) transientAiKey = keyInput;
             syncKeyToSessionIfNeeded();
 
-            if (!endpoint || !model || !transientAiKey) {
-                alert('請先在「AI API 設定」填入 Endpoint / Model / API Key（Key 由使用者自帶）。');
-                return;
-            }
+            if (!endpoint || !model || !transientAiKey) return alert('請先在「AI API 設定」填入 Endpoint / Model / API Key。');
 
             const aiBtn = Array.from(document.querySelectorAll('button')).find(b => (b.innerText || '').includes('用 AI'));
             if (aiBtn) { aiBtn.disabled = true; aiBtn.innerText = "⏳ AI 整理中..."; }
 
             try {
-                const prompt = [
-                    "請從以下會議逐字稿整理出「行動方案」，用繁體中文輸出。",
-                    "格式要求：每條一行、以「- 」開頭；每條盡量包含：事項、負責人（若有）、期限（若有）。",
-                    "不要加標題、不要加其他說明文字，只輸出清單。",
-                    "",
-                    "逐字稿：",
-                    content
-                ].join('\n');
-
+                const prompt = ["請從以下會議逐字稿整理出「行動方案」，用繁體中文輸出。","格式要求：每條一行、以「- 」開頭；每條盡量包含：事項、負責人（若有）、期限（若有）。","不要加標題、不要加其他說明文字，只輸出清單。","","逐字稿：",content].join('\n');
                 const resp = await fetch(endpoint, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${transientAiKey}`
-                    },
-                    body: JSON.stringify({
-                        model,
-                        messages: [
-                            { role: 'system', content: '你是會議紀錄助理，擅長從逐字稿抽取可執行的待辦事項。' },
-                            { role: 'user', content: prompt }
-                        ],
-                        temperature: 0.2
-                    })
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${transientAiKey}` },
+                    body: JSON.stringify({ model, messages: [{ role: 'system', content: '你是會議紀錄助理，擅長從逐字稿抽取可執行的待辦事項。' }, { role: 'user', content: prompt }], temperature: 0.2 })
                 });
 
-                if (!resp.ok) {
-                    const t = await resp.text();
-                    throw new Error(`API 回應失敗 (${resp.status})：${t}`);
-                }
-
+                if (!resp.ok) throw new Error(`API 回應失敗 (${resp.status})：${await resp.text()}`);
                 const data = await resp.json();
                 const text = data?.choices?.[0]?.message?.content ?? '';
                 if (!text.trim()) throw new Error('AI 沒有回傳內容。');
-
                 document.getElementById('actionItems').value = text.trim();
             } catch (e) {
                 console.error(e);
-                alert("AI 整理失敗（可能是 CORS、Key、配額或 Endpoint/Model 不相容）。\n" + (e?.message || e));
+                alert("AI 整理失敗。\n" + (e?.message || e));
             } finally {
                 if (aiBtn) { aiBtn.disabled = false; aiBtn.innerText = "🤖 用 AI 從逐字稿整理行動方案"; }
             }
         }
 
-        // --- 匯出：資料夾（若支援）或多檔下載 ---
-        async function exportFolder(record) {
-            const folderName = `會議紀錄_${record.rawDate}`;
+        // 配合修正：從 meetingRecords 裡抓資料
+        async function exportFolder(id) {
+            const record = meetingRecords.find(r => r.id === id);
+            if (!record) return;
 
+            const folderName = `會議紀錄_${record.rawDate}`;
             const files = [
                 { name: '01_original_transcript_zh.txt', content: record.content || '' },
                 { name: '02_translation_en.txt', content: record.translatedContent || '' },
                 { name: '03_action_items_zh.txt', content: record.actionItems || '' },
                 { name: '04_action_items_en.txt', content: record.translatedActionItems || '' },
-                { name: 'meta.json', content: JSON.stringify({
-                    id: record.id,
-                    date: record.date,
-                    participants: record.participants
-                }, null, 2) }
+                { name: 'meta.json', content: JSON.stringify({ id: record.id, date: record.date, participants: record.participants }, null, 2) }
             ];
 
-            // Chrome / Edge：可由使用者選擇資料夾並寫入
             if (window.showDirectoryPicker) {
                 try {
                     const dirHandle = await window.showDirectoryPicker();
                     const meetingDir = await dirHandle.getDirectoryHandle(folderName, { create: true });
-
                     for (const f of files) {
                         const fileHandle = await meetingDir.getFileHandle(f.name, { create: true });
                         const writable = await fileHandle.createWritable();
@@ -836,20 +812,15 @@
                     }
                     alert(`已匯出到資料夾：${folderName}`);
                     return;
-                } catch (e) {
-                    console.warn('資料夾匯出失敗，改用下載：', e);
-                }
+                } catch (e) { console.warn('資料夾匯出失敗，改用下載：', e); }
             }
 
-            // 退回方案：逐一下載
             for (const f of files) {
                 const blob = new Blob([f.content], { type: 'text/plain;charset=utf-8' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = url;
-                a.download = `${folderName}_${f.name}`;
-                a.click();
-                URL.revokeObjectURL(url);
+                a.href = url; a.download = `${folderName}_${f.name}`;
+                a.click(); URL.revokeObjectURL(url);
             }
         }
     </script>
